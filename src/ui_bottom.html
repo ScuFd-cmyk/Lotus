@@ -1,0 +1,535 @@
+// ---------- game state ----------
+let G = null, DEF = null, busy = false, sel = null, undoStack = [], undosLeft = 3, boosterMode = null, hintTimer = null, hintCells = [], usedPre = [], usedBoosters = {}, extraUsed = false, zenCleared = 0, score = 0;
+const els = new Map();
+let CELL = 44;
+let T = { swap: 160, clear: 220, fall: 250 };
+
+function layout() {
+  const wrap = $('#boardWrap');
+  const w = wrap.clientWidth - 36, h = wrap.clientHeight - 36;
+  CELL = Math.max(28, Math.floor(Math.min(w, h, 560) / N));
+  document.documentElement.style.setProperty('--cell', CELL + 'px');
+  if (G) { buildBg(); renderGrass(); for (const [, e] of els) { const p = e._pos; if (p) setPos(e, p[0], p[1]); } }
+}
+window.addEventListener('resize', () => setTimeout(layout, 50));
+function setSpeed() {
+  const k = [1.5, 1, 0.6][SAVE.settings.speed];
+  const r = document.documentElement.style;
+  r.setProperty('--t-swap', Math.round(160 * k) + 'ms'); r.setProperty('--t-clear', Math.round(220 * k) + 'ms'); r.setProperty('--t-fall', Math.round(250 * k) + 'ms');
+  T = { swap: 160 * k, clear: 220 * k, fall: 250 * k };
+}
+
+function startLevel(def, pre) {
+  DEF = def; G = new Game(def);
+  const st = def.daily || def.zen ? 0 : Math.min(3, SAVE.streak);
+  const specials = [];
+  if (st >= 1) specials.push(S_RH);
+  if (st >= 2) specials.push(S_TNT);
+  if (st >= 3) specials.push(S_LIGHT);
+  usedPre = pre.slice();
+  for (const k of pre) { SAVE.inv[k]--; specials.push(PRE.find(p => p[0] === k)[3]); }
+  if (specials.length) G.placeSpecials(specials.map(s => s === S_RH && G.rng() < .5 ? S_RV : s));
+  persist();
+  usedBoosters = {}; undoStack = []; undosLeft = def.zen ? 99 : 3; sel = null; boosterMode = null; extraUsed = false; zenCleared = 0; score = 0;
+  els.clear(); $('#pieceLayer').innerHTML = ''; $('#fx').innerHTML = '';
+  show('game');
+  $('#lvlName').textContent = def.zen ? 'Zen' : def.daily ? 'Daily' : 'Level ' + def.n;
+  const d = $('#lvlDiff');
+  d.textContent = def.zen ? 'no goals · no limits' : def.daily ? def.daily : def.difficulty;
+  d.classList.toggle('hard', !!def.hard);
+  layout();
+  render(true);
+  updateHud();
+  renderBoosters();
+  scheduleHint();
+}
+
+function buildBg() {
+  let h = '';
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) h += `<div class="cellbg" style="transform:translate(${c * CELL}px,${r * CELL}px)"></div>`;
+  $('#bgLayer').innerHTML = h;
+  $('#grassLayer').innerHTML = '';
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) { const g = el('div', 'silt gone'); g.id = 'gr' + r + '_' + c; $('#grassLayer').appendChild(g); }
+}
+function renderGrass() {
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const g = document.getElementById('gr' + r + '_' + c); if (!g) continue;
+    const v = G.grass[r][c];
+    g.className = 'silt' + (v === 0 ? ' gone' : v > 1 ? ' g2' : '');
+    g.style.transform = `translate(${c * CELL}px,${r * CELL}px)` + (v === 0 ? ' scale(1.25)' : '');
+  }
+}
+function setPos(e, r, c) { e._pos = [r, c]; e.style.transform = `translate(${c * CELL}px,${r * CELL}px)`; }
+function render(initial) {
+  const seen = new Set();
+  const fresh = [];
+  for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) {
+    const t = G.board[r][c];
+    if (!t) continue;
+    seen.add(t.id);
+    let e = els.get(t.id);
+    const artKey = t.c === CRATE ? 'k' + t.hp : t.c + ':' + t.s;
+    if (!e) {
+      e = el('div', 'piece'); e.appendChild(el('div', 'in'));
+      els.set(t.id, e); $('#pieceLayer').appendChild(e);
+      e.style.transition = 'none';
+      if (t.spawn != null && !initial) setPos(e, t.spawn, c); else setPos(e, r, c);
+      if (t.born) e.classList.add('born');
+      delete t.spawn; delete t.born;
+      fresh.push([e, r, c]);
+    } else {
+      if (t.born) { e.classList.remove('born'); void e.offsetWidth; e.classList.add('born'); delete t.born; }
+      setPos(e, r, c);
+    }
+    if (e._art !== artKey) {
+      const had = e._art;
+      e.firstChild.innerHTML = pieceArt(t); e._art = artKey;
+      e.firstChild.className = 'in' + (t.s === S_LIGHT ? ' spin' : t.s === S_TNT ? ' spinfast' : t.s === S_PROP ? ' bob' : '');
+      if (t.c === CRATE && had) { e.classList.remove('hit'); void e.offsetWidth; e.classList.add('hit'); }
+    }
+  }
+  if (fresh.length) { void $('#pieceLayer').offsetWidth; for (const [e, r, c] of fresh) { e.style.transition = ''; setPos(e, r, c); } }
+  for (const [id, e] of els) if (!seen.has(id)) { e.classList.add('pop'); els.delete(id); setTimeout(() => e.remove(), T.clear + 80); }
+  renderGrass();
+  if (sel) { const t = G.at(...sel); if (t) els.get(t.id)?.classList.add('sel'); }
+}
+
+function updateHud() {
+  $('#movesN').textContent = DEF.zen ? '∞' : G.moves;
+  $('#movesBox').classList.toggle('low', !DEF.zen && G.moves <= 5);
+  $('#scoreN').textContent = score.toLocaleString();
+  if (DEF.zen) { $('#goalBox').innerHTML = `<div class="goal"><div class="ic">${ART.lotusIcon()}</div><b>${zenCleared}</b></div>`; }
+  else {
+    const prev = {}; $('#goalBox').querySelectorAll('.goal').forEach(g => prev[g.dataset.k] = g.querySelector('b').textContent);
+    $('#goalBox').innerHTML = goalIcons(DEF, G);
+    let ticked = false;
+    $('#goalBox').querySelectorAll('.goal').forEach(g => {
+      const p = prev[g.dataset.k], now = g.querySelector('b').textContent;
+      if (p != null && p !== now) { g.classList.add('bump'); if (now === '0') ticked = true; }
+    });
+    if (ticked) sfx.chime();
+  }
+  const ub = $('#undoBtn');
+  if (ub) { ub.classList.toggle('off', !(undoStack.length && undosLeft > 0)); ub.querySelector('.n').textContent = undosLeft; }
+}
+
+// ---------- garden tools (in-game boosters) ----------
+const BOOST = [['hammer', 'Tap', 'Tap: lift out one stone or one driftwood layer', ART.tap, 60], ['arrow', 'Breeze', 'Gentle Breeze: clears a row', ART.breeze, 80], ['cannon', 'Rainfall', 'Rainfall: clears a column', ART.rain, 80], ['shuffle', 'Stir', 'Stir the basin', ART.stir, 40]];
+function renderBoosters() {
+  $('#boosterBar').innerHTML = BOOST.map(([k, label, , art]) => `<button class="bst ${boosterMode === k ? 'on' : ''}" data-k="${k}"><span class="stone">${art()}</span><span class="n ${SAVE.inv[k] ? '' : 'plus'}">${SAVE.inv[k] || '+'}</span><label>${label}</label></button>`).join('')
+    + `<span class="sep"></span><button class="bst" id="undoBtn"><span class="stone" style="width:46px;height:46px">${ART.undo()}</span><span class="n plus">${undosLeft}</span><label>Undo</label></button>`;
+  $('#boosterBar').querySelectorAll('.bst[data-k]').forEach(b => b.onclick = () => tapBooster(b.dataset.k));
+  $('#undoBtn').onclick = () => doUndo();
+  const bh = $('#boostHint');
+  if (boosterMode) { bh.textContent = BOOST.find(b => b[0] === boosterMode)[2] + ' — tap the basin'; bh.style.display = 'block'; } else bh.style.display = 'none';
+  if (G) updateHudUndo();
+}
+function updateHudUndo() { const ub = $('#undoBtn'); if (ub) ub.classList.toggle('off', !(undoStack.length && undosLeft > 0)); }
+async function tapBooster(k) {
+  if (busy) return;
+  if (!SAVE.inv[k]) {
+    const price = BOOST.find(b => b[0] === k)[4];
+    if (SAVE.coins >= price) { SAVE.coins -= price; SAVE.inv[k]++; persist(); toast(`Traded ${price} earned coins for 1 ${BOOST.find(b => b[0] === k)[1]}`); renderBoosters(); }
+    else toast('Not enough coins yet — they come from playing');
+    return;
+  }
+  if (k === 'shuffle') {
+    pushUndo(); spendBooster(k); busy = true; clearHint();
+    sfx.whoosh(); fxSwirl(3.5, 3.5, 4.5);
+    G.shuffle(); render(); await sleep(T.fall + 120); busy = false; updateHud(); scheduleHint(); return;
+  }
+  boosterMode = boosterMode === k ? null : k;
+  clearSel();
+  renderBoosters();
+}
+function spendBooster(k) { SAVE.inv[k]--; usedBoosters[k] = (usedBoosters[k] || 0) + 1; persist(); renderBoosters(); }
+async function applyBooster(r, c) {
+  const k = boosterMode; boosterMode = null; renderBoosters();
+  const t = G.at(r, c);
+  if (k === 'hammer' && !t) return;
+  pushUndo(); spendBooster(k); busy = true; clearHint();
+  let res;
+  if (k === 'hammer') { res = G.boosterHammer(r, c); sfx.tok(); }
+  else if (k === 'arrow') { res = G.boosterRow(r); res.blasts = [{ type: 'breeze', r, c: 0 }]; sfx.rush(); }
+  else { res = G.boosterCol(c); res.blasts = [{ type: 'rain', r: 0, c }]; sfx.rush(); }
+  await cascade(res, []);
+  busy = false; afterMove();
+}
+
+// ---------- undo ----------
+function pushUndo() { undoStack.push({ snap: G.snapshot(), inv: { ...SAVE.inv }, used: { ...usedBoosters }, zen: zenCleared, score }); if (undoStack.length > 10) undoStack.shift(); }
+function doUndo() {
+  if (busy || !undoStack.length) return false;
+  if (undosLeft <= 0) { toast('No undos left this attempt'); return false; }
+  const u = undoStack.pop(); undosLeft--;
+  G.restore(u.snap); SAVE.inv = u.inv; usedBoosters = u.used; zenCleared = u.zen; score = u.score; persist();
+  render(); renderBoosters(); updateHud(); scheduleHint();
+  sfx.swish();
+  toast(`Move undone · ${undosLeft} left`);
+  return true;
+}
+
+// ---------- input ----------
+let down = null;
+const board = $('#board');
+function cellFrom(ev) { const b = board.getBoundingClientRect(); const c = Math.floor((ev.clientX - b.left) / CELL), r = Math.floor((ev.clientY - b.top) / CELL); return inB(r, c) ? [r, c] : null; }
+board.addEventListener('pointerdown', ev => {
+  ev.preventDefault(); ac();
+  const cell = cellFrom(ev); if (!cell) return;
+  down = { cell, x: ev.clientX, y: ev.clientY, moved: false };
+  try { board.setPointerCapture(ev.pointerId); } catch (e) {}
+  const t = G && G.at(...cell); if (t && t.c !== CRATE && !busy && !boosterMode) { els.get(t.id)?.classList.add('sel'); haptic(4); }
+});
+board.addEventListener('pointermove', ev => {
+  if (!down || down.moved || busy || boosterMode) return;
+  const dx = ev.clientX - down.x, dy = ev.clientY - down.y;
+  if (Math.max(Math.abs(dx), Math.abs(dy)) < CELL * 0.35) return;
+  down.moved = true;
+  const [r, c] = down.cell;
+  const to = Math.abs(dx) > Math.abs(dy) ? [r, c + Math.sign(dx)] : [r + Math.sign(dy), c];
+  clearSel();
+  if (inB(...to)) doSwap(down.cell, to);
+});
+board.addEventListener('pointerup', () => {
+  if (!down) return;
+  const d = down; down = null;
+  if (d.moved || busy) return;
+  const [r, c] = d.cell;
+  if (boosterMode) { applyBooster(r, c); return; }
+  const t = G.at(r, c);
+  if (!t || t.c === CRATE) { clearSel(); return; }
+  if (sel) {
+    const s = sel;
+    if (s[0] === r && s[1] === c) { clearSel(); if (t.s) doFire(r, c); return; }
+    if (Math.abs(s[0] - r) + Math.abs(s[1] - c) === 1) { clearSel(); doSwap(s, [r, c]); return; }
+  }
+  if (t.s) { clearSel(); doFire(r, c); return; }
+  clearSel(); sel = [r, c]; els.get(t.id)?.classList.add('sel');
+});
+board.addEventListener('pointercancel', () => { down = null; clearSel(); });
+function clearSel() { sel = null; document.querySelectorAll('.piece.sel').forEach(e => e.classList.remove('sel')); }
+
+// ---------- hints ----------
+function clearHint() { clearTimeout(hintTimer); hintCells.forEach(e => e.classList.remove('hint')); hintCells = []; }
+function scheduleHint() {
+  clearHint();
+  const d = SAVE.settings.hint;
+  if (!d || !G) return;
+  hintTimer = setTimeout(() => {
+    if (busy || !G) return;
+    const m = G.findMove(); if (!m) return;
+    hintCells = m.map(([r, c]) => els.get(G.at(r, c)?.id)).filter(Boolean);
+    hintCells.forEach(e => e.classList.add('hint'));
+  }, d * 1000);
+}
+
+// ---------- water FX (no flashes, no shake) ----------
+const still = () => SAVE.settings.still;
+function fxRipple(r, c, radiusCells, delay = 0) {
+  if (still()) return;
+  const e = el('div', 'ripple'); const s = radiusCells * 2 * CELL;
+  Object.assign(e.style, { left: ((c + .5) * CELL - s / 2) + 'px', top: ((r + .5) * CELL - s / 2) + 'px', width: s + 'px', height: s + 'px', animationDelay: delay + 'ms' });
+  $('#fx').appendChild(e); setTimeout(() => e.remove(), 1200 + delay);
+}
+function fxSwirl(r, c, rad) {
+  if (still()) return;
+  const e = el('div', 'swirl'); const s = rad * 2 * CELL;
+  Object.assign(e.style, { left: ((c + .5) * CELL - s / 2) + 'px', top: ((r + .5) * CELL - s / 2) + 'px', width: s + 'px', height: s + 'px' });
+  $('#fx').appendChild(e); setTimeout(() => e.remove(), 650);
+}
+function fxSwim(r, c, dir) { // koi swims across row ('h') or column ('v')
+  const fx = $('#fx');
+  const fish = el('div', 'swimmer', `<svg viewBox="0 0 100 100"><g transform="${dir === 'v' ? 'rotate(90 50 50)' : ''}">${KOI}</g></svg>`);
+  const from = dir === 'h' ? [r, -1] : [-1, c], to = dir === 'h' ? [r, N] : [N, c];
+  fish.style.transform = `translate(${from[1] * CELL}px,${from[0] * CELL}px)`;
+  fx.appendChild(fish); void fish.offsetWidth;
+  fish.style.transform = `translate(${to[1] * CELL}px,${to[0] * CELL}px)`;
+  setTimeout(() => fish.remove(), 460);
+  if (!still()) {
+    const w = el('div', 'wake');
+    if (dir === 'h') Object.assign(w.style, { left: 0, top: (r * CELL + CELL * .35) + 'px', width: N * CELL + 'px', height: CELL * .3 + 'px' });
+    else Object.assign(w.style, { top: 0, left: (c * CELL + CELL * .35) + 'px', height: N * CELL + 'px', width: CELL * .3 + 'px', background: 'linear-gradient(180deg,transparent,rgba(255,255,255,.7),transparent)' });
+    fx.appendChild(w); setTimeout(() => w.remove(), 650);
+  }
+}
+function fxBlasts(blasts) {
+  const fx = $('#fx');
+  let sounds = new Set();
+  for (const b of blasts) {
+    if (b.type === 'h' || b.type === 'v') { fxSwim(b.r, b.c, b.type); sounds.add('rush'); }
+    else if (b.type === 'breeze') { fxSwim(b.r, 0, 'h'); }
+    else if (b.type === 'rain') { fxSwim(0, b.c, 'v'); for (let y = 0; y < N; y += 2) fxRipple(y, b.c, .6, y * 40); }
+    else if (b.type === 'tnt' || b.type === 'mega') {
+      const rad = b.type === 'mega' ? 6 : b.rad + .5;
+      fxSwirl(b.r, b.c, rad); fxRipple(b.r, b.c, rad + .5, 250); sounds.add('whoosh');
+    } else if (b.type === 'light') {
+      if (!still()) for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        const u = G.board[y][x]; if (!u || u.c !== b.color) continue;
+        const dx = (x - b.c) * CELL, dy = (y - b.r) * CELL, len = Math.hypot(dx, dy);
+        const e = el('div', 'thread'); Object.assign(e.style, { left: ((b.c + .5) * CELL) + 'px', top: ((b.r + .5) * CELL - 1) + 'px', width: len + 'px', transform: `rotate(${Math.atan2(dy, dx)}rad)` });
+        fx.appendChild(e); setTimeout(() => e.remove(), 620);
+      }
+      fxRipple(b.r, b.c, 2.5); sounds.add('bowl');
+    } else if (b.type === 'prop') {
+      const e = el('div', 'swimmer', ART.fly()); e.style.transform = `translate(${b.c * CELL}px,${b.r * CELL}px)`;
+      fx.appendChild(e); void e.offsetWidth; e.style.transform = `translate(${b.to[1] * CELL}px,${b.to[0] * CELL}px)`;
+      setTimeout(() => { e.remove(); fxRipple(b.to[0], b.to[1], .8); }, 440); sounds.add('flutter');
+    }
+  }
+  for (const s of sounds) sfx[s]();
+}
+function fxDroplets(cleared) {
+  if (still() || !cleared.length) return;
+  const fx = $('#fx');
+  for (const { r, c } of cleared.slice(0, 30)) {
+    for (let i = 0; i < 2; i++) {
+      const s = el('div', 'drop'); const dx = (Math.random() - .5) * CELL * .9;
+      s.style.left = ((c + .5) * CELL - 3) + 'px'; s.style.top = ((r + .5) * CELL - 3) + 'px';
+      s.style.setProperty('--dx', dx + 'px'); s.style.setProperty('--up', -(CELL * (.25 + Math.random() * .3)) + 'px');
+      fx.appendChild(s); setTimeout(() => s.remove(), 600);
+    }
+  }
+  // one calm ring per cleared cluster centre
+  const cr = cleared.reduce((a, x) => a + x.r, 0) / cleared.length, cc = cleared.reduce((a, x) => a + x.c, 0) / cleared.length;
+  fxRipple(cr, cc, Math.min(3, 1 + cleared.length / 8));
+}
+function praise(text) { const p = el('div', 'praise', text); $('#board').appendChild(p); setTimeout(() => p.remove(), 1350); }
+
+// ---------- move flow ----------
+async function cascade(first, focus) {
+  let steps = 0;
+  const handle = async s => {
+    steps++;
+    score += s.cleared.length * 10 * Math.max(1, s.chain || 1) + (s.created?.length || 0) * 50;
+    if (s.created?.length) sfx.made();
+    sfx.clink(steps - 1);
+    fxBlasts(s.blasts); fxDroplets(s.cleared); zenCleared += s.cleared.length;
+    render(); updateHud(); await sleep(T.clear + 40);
+    G.gravity(); render(); await sleep(T.fall + 40);
+  };
+  if (first) await handle(first);
+  let f = focus;
+  for (;;) {
+    const s = G.resolveStep(f); f = [];
+    if (!s) break;
+    await handle(s);
+  }
+  if (steps >= 3) { praise(['', '', '', 'Flow', 'Serene', 'Harmony'][Math.min(5, steps)] || 'Harmony'); sfx.bell(); }
+  G.chain = 0;
+  if (!G.findMove()) { toast('No moves left — the basin stirs itself (free)'); sfx.whoosh(); fxSwirl(3.5, 3.5, 4.5); G.shuffle(); render(); await sleep(T.fall + 100); }
+}
+async function doSwap(a, b) {
+  if (busy || DEF == null) return;
+  const A = G.at(...a), B = G.at(...b);
+  if (!G.canSwap(a, b)) return;
+  busy = true; clearHint();
+  const valid = G.isValidSwap(a, b);
+  const eA = els.get(A.id), eB = els.get(B.id);
+  [eA, eB].forEach(e => e.classList.add('swap'));
+  if (!valid) {
+    sfx.tok();
+    const mid = (p, q, k) => [p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k];
+    setPos(eA, ...mid(a, b, .35)); setPos(eB, ...mid(b, a, .35)); await sleep(T.swap);
+    setPos(eA, ...a); setPos(eB, ...b); await sleep(T.swap + 20);
+    [eA, eB].forEach(e => e.classList.remove('swap'));
+    busy = false; scheduleHint(); return;
+  }
+  pushUndo(); sfx.swish(); haptic(8);
+  G.swapCells(a, b); render(); await sleep(T.swap + 20);
+  [eA, eB].forEach(e => e.classList.remove('swap'));
+  if (!DEF.zen) { G.moves--; G.movesUsed++; }
+  updateHud();
+  if (A.s || B.s) { haptic(15); await cascade(G.fireSwap(a, b), []); }
+  else await cascade(null, [a, b]);
+  busy = false; afterMove();
+}
+async function doFire(r, c) {
+  if (busy) return;
+  busy = true; clearHint(); pushUndo(); haptic(15);
+  if (!DEF.zen) { G.moves--; G.movesUsed++; }
+  updateHud();
+  await cascade(G.fireAt(r, c), []);
+  busy = false; afterMove();
+}
+function afterMove() {
+  updateHud(); updateHudUndo(); scheduleHint();
+  if (DEF.zen) return;
+  if (G.goalMet()) { busy = true; clearHint(); setTimeout(win, 450); return; }
+  if (G.moves <= 0) { busy = true; clearHint(); setTimeout(outOfMoves, 450); }
+}
+
+// ---------- end of level ----------
+function refundBoosters() {
+  for (const k of usedPre) SAVE.inv[k]++;
+  for (const [k, n] of Object.entries(usedBoosters)) SAVE.inv[k] += n;
+  usedPre = []; usedBoosters = {};
+}
+function bloomBasin() {
+  if (still()) return;
+  for (let i = 0; i < 7; i++) {
+    const r = Math.random() * 7, c = Math.random() * 7;
+    setTimeout(() => {
+      const e = el('div', 'swimmer', ART.lotus()); e.style.transform = `translate(${c * CELL}px,${r * CELL}px) scale(.2)`; e.style.opacity = 0;
+      $('#fx').appendChild(e); void e.offsetWidth; e.style.transition = 'transform .8s ease-out, opacity .8s'; e.style.transform = `translate(${c * CELL}px,${r * CELL}px) scale(1)`; e.style.opacity = .95;
+      fxRipple(r, c, 1.2);
+      setTimeout(() => { e.style.opacity = 0; setTimeout(() => e.remove(), 800); }, 1300);
+    }, i * 140);
+  }
+}
+function win() {
+  sfx.win(); haptic([10, 40, 10]); bloomBasin();
+  const isDaily = !!DEF.daily;
+  const firstClear = isDaily ? !SAVE.daily[DEF.daily] : !SAVE.done[DEF.n];
+  const stars = isDaily ? 0 : firstClear ? (DEF.hard ? 2 : 1) : 0;
+  const coins = (isDaily ? (firstClear ? 60 : 5) : (firstClear ? 20 : 5)) + G.moves * (firstClear ? 3 : 1);
+  SAVE.coins += coins; SAVE.stars += stars;
+  if (isDaily) SAVE.daily[DEF.daily] = true;
+  else {
+    SAVE.done[DEF.n] = true; delete SAVE.skipped[DEF.n]; delete SAVE.fails[DEF.n];
+    if (DEF.n === SAVE.level) SAVE.level++;
+    if (SAVE.level > TOTAL_LEVELS) toast('You finished all 10,000 levels. The Daily and Zen modes go on forever.');
+    SAVE.streak = Math.min(3, SAVE.streak + 1);
+  }
+  let gift = '';
+  if (firstClear && !isDaily && DEF.n % 4 === 0) { const ks = [['hammer', 'Tap'], ['arrow', 'Breeze'], ['cannon', 'Rainfall'], ['shuffle', 'Stir'], ['rocket', 'Koi'], ['tnt', 'Whirlpool'], ['light', 'Lotus']]; const [k, nm] = ks[DEF.n % ks.length]; SAVE.inv[k]++; gift = `<p>A gift floats by: +1 <b>${nm}</b></p>`; }
+  persist();
+  setTimeout(() => {
+    modal(`<h2>${DEF.hard ? 'Hard level, calmly done' : 'Still waters'}</h2>
+      ${stars ? `<div class="bigicon">${ART.lotusIcon()}</div><p><b>+${stars} lotus</b> to restore the garden</p>` : ''}
+      <div class="coinsUp"><span style="display:inline-block;width:30px;height:30px;vertical-align:-6px">${ART.coin()}</span> +${coins}</div>
+      <p class="small">Score ${score.toLocaleString()} · ${G.moves} leftover move${G.moves === 1 ? '' : 's'} became coins.</p>
+      ${gift}
+      <div class="actions">${!isDaily ? `<button class="btn jade" id="nextBtn">Level ${SAVE.level}</button>` : ''}<button class="btn quiet" id="homeBtn">Back to the garden</button></div>`);
+    $('#homeBtn').onclick = () => { closeModal(); goHome(); };
+    const nb = $('#nextBtn'); if (nb) nb.onclick = () => { closeModal(); preLevel(levelDef(SAVE.level)); };
+  }, still() ? 100 : 1100);
+}
+function outOfMoves() {
+  const rem = G.remaining();
+  const left = Object.values(rem).reduce((a, b) => a + b, 0);
+  const fails = (SAVE.fails[DEF.n] || 0) + 1;
+  const canSkip = !DEF.daily && fails >= 3 && DEF.n === SAVE.level;
+  modal(`<h2>The water settles</h2>
+    <p>Only <b>${left}</b> left. Take a breath.</p>
+    <div class="goalsRow">${goalIcons(DEF, G)}</div>
+    <div class="actions">
+      ${!extraUsed ? `<button class="btn jade" id="plusBtn">+5 moves · free, once per attempt</button>` : ''}
+      ${undoStack.length && undosLeft > 0 ? `<button class="btn sky" id="undoBtn2">Undo last move (${undosLeft} left)</button>` : ''}
+      <button class="btn" id="retryBtn">Try again</button>
+      ${canSkip ? `<button class="btn quiet" id="skipBtn">Skip ahead · come back anytime</button>` : ''}
+      <button class="btn quiet" id="quitBtn">Back to the garden</button>
+    </div>
+    <p class="small">No lives lost.${Object.keys(usedBoosters).length || usedPre.length ? ' Power-ups used this attempt are returned if you retry or leave.' : ''}</p>`);
+  const fail = () => { if (!DEF.daily) { SAVE.fails[DEF.n] = fails; SAVE.streak = Math.max(0, SAVE.streak - 1); } refundBoosters(); persist(); };
+  const pb = $('#plusBtn'); if (pb) pb.onclick = () => { extraUsed = true; G.moves += 5; closeModal(); busy = false; updateHud(); scheduleHint(); };
+  const ub = $('#undoBtn2'); if (ub) ub.onclick = () => { closeModal(); busy = false; doUndo(); };
+  $('#retryBtn').onclick = () => { fail(); closeModal(); startLevel(DEF, []); };
+  $('#quitBtn').onclick = () => { fail(); closeModal(); goHome(); };
+  const sb = $('#skipBtn'); if (sb) sb.onclick = () => { fail(); SAVE.skipped[DEF.n] = true; SAVE.level++; persist(); closeModal(); toast(`Level ${DEF.n} skipped — replay it from Levels anytime`); goHome(); };
+}
+function goHome() { G = null; DEF = null; busy = false; clearHint(); show('home'); renderHome(); }
+
+$('#btnPause').onclick = () => {
+  if (!G) return;
+  modal(`<button class="close">×</button><h2>Pause</h2>
+    ${DEF.zen ? `<p>You've cleared <b>${zenCleared}</b> stones.</p>` : `<p>Leaving costs nothing. There are no lives here.</p>`}
+    <div class="actions"><button class="btn jade" id="resBtn">Resume</button>${!DEF.zen ? '<button class="btn" id="rstBtn">Restart</button>' : ''}<button class="btn sky" id="setBtn">Settings</button><button class="btn quiet" id="exitBtn">Back to the garden</button></div>`);
+  $('#resBtn').onclick = closeModal;
+  const rb = $('#rstBtn'); if (rb) rb.onclick = () => { refundBoosters(); persist(); closeModal(); startLevel(DEF, []); };
+  $('#setBtn').onclick = showSettings;
+  $('#exitBtn').onclick = () => { if (!DEF.zen) { refundBoosters(); persist(); } closeModal(); goHome(); };
+};
+
+// ---------- other screens ----------
+const TOTAL_LEVELS = 10000, PER_CHAPTER = 100;
+let levelsChapter = null;
+function showLevels() {
+  const max = Math.max(SAVE.level, 1);
+  if (levelsChapter == null) levelsChapter = Math.floor((Math.min(max, TOTAL_LEVELS) - 1) / PER_CHAPTER);
+  const ch = levelsChapter, lastCh = Math.ceil(TOTAL_LEVELS / PER_CHAPTER) - 1;
+  const from = ch * PER_CHAPTER + 1, to = Math.min(TOTAL_LEVELS, from + PER_CHAPTER - 1);
+  let h = '';
+  for (let n = from; n <= to; n++) {
+    const hard = n >= 7 && n % 7 === 0;
+    const cls = n > max ? 'lock' : SAVE.done[n] ? 'done' : SAVE.skipped[n] ? 'skip' : '';
+    h += `<button class="lv ${cls} ${hard ? 'hard' : ''} ${n === max ? 'cur' : ''}" data-n="${n}" ${n > max ? 'disabled' : ''}>${n}</button>`;
+  }
+  const cleared = Object.keys(SAVE.done).length;
+  modal(`<button class="close">×</button><h2>Levels</h2>
+    <p class="small">${cleared.toLocaleString()} of ${TOTAL_LEVELS.toLocaleString()} cleared · Jade = cleared · amber = skipped · pink dot = Hard</p>
+    <div class="opt" style="border:0;justify-content:center;gap:8px">
+      <button class="pebble" id="chFirst" ${ch === 0 ? 'disabled style="opacity:.35"' : ''}>«</button>
+      <button class="pebble" id="chPrev" ${ch === 0 ? 'disabled style="opacity:.35"' : ''}>‹</button>
+      <b style="min-width:150px">Chapter ${ch + 1} · ${from}–${to}</b>
+      <button class="pebble" id="chNext" ${ch === lastCh ? 'disabled style="opacity:.35"' : ''}>›</button>
+      <button class="pebble" id="chCur" title="Jump to your level">◎</button>
+    </div>
+    <div class="lvlgrid">${h}</div>`, () => { levelsChapter = null; });
+  const go = c => { levelsChapter = Math.max(0, Math.min(lastCh, c)); showLevels(); };
+  $('#chFirst').onclick = () => go(0); $('#chPrev').onclick = () => go(ch - 1); $('#chNext').onclick = () => go(ch + 1);
+  $('#chCur').onclick = () => go(Math.floor((Math.min(max, TOTAL_LEVELS) - 1) / PER_CHAPTER));
+  $('#card').querySelectorAll('.lv:not(.lock)').forEach(b => b.onclick = () => { levelsChapter = null; preLevel(levelDef(+b.dataset.n)); });
+  const cur = $('#card .lv.cur'); if (cur) setTimeout(() => cur.scrollIntoView({ block: 'center' }), 50);
+}
+function showShop() {
+  const items = [...BOOST.map(b => [b[0], b[1], b[3], b[4]]), ['rocket', 'Koi', () => ART.koi(false), 50], ['tnt', 'Whirlpool', ART.whirl, 70], ['light', 'Lotus', ART.lotus, 100]];
+  const draw = () => {
+    modal(`<button class="close">×</button><h2>Garden shop</h2>
+      <p>Everything here costs <b>coins you earn by playing</b>. No premium currency, nothing sold for real money.</p>
+      <div class="kv"><span>Your coins</span><b>${SAVE.coins}</b></div>
+      <div class="shopgrid">${items.map(([k, nm, art, p]) => `<div class="shopitem">${art()}<span>${nm} · ${SAVE.inv[k]}</span><button data-k="${k}" data-p="${p}" ${SAVE.coins < p ? 'disabled' : ''}>${p}</button></div>`).join('')}</div>
+      <p class="small" style="margin-top:12px">Fixed prices. No timers, no “limited offers”.</p>`, () => renderHome());
+    $('#card').querySelectorAll('.shopitem button').forEach(b => b.onclick = () => { const p = +b.dataset.p; if (SAVE.coins < p) return; SAVE.coins -= p; SAVE.inv[b.dataset.k]++; persist(); sfx.clink(4); draw(); });
+  };
+  draw();
+}
+function showPromise() {
+  const L = [
+    ['No lives, no energy, no timers', 'Play as long as you like. Candy Crush, Royal Match and Royal Kingdom all make you wait 30 minutes per life or pay.'],
+    ['Nothing sold for real money', 'Coins only come from playing. No gold bars, piggy banks or pop-up offers.'],
+    ['Every level beatable without boosters', 'All 10,000 levels were auto-playtested by a bot that never uses boosters; move counts come from those results.'],
+    ['Hard levels labelled up front', 'They give 2 lotus, and each is followed by a Breather. No hidden walls.'],
+    ['Failing costs nothing', 'Power-ups you used come back if you don\'t win. A loss drops your flow streak one step, not to zero.'],
+    ['Free +5 moves once per attempt', 'The thing other games charge for.'],
+    ['Undo', 'Three per attempt. Misswipes happen.'],
+    ['Skip a level', 'After 3 tries, move on and come back later.'],
+    ['Fair, seeded basins', 'Boards come from a fixed seed, never tuned in the moment to make you lose.'],
+    ['Daily stillness & Zen mode', 'One shared board a day, plus an endless no-goal mode.'],
+    ['No ads, no notifications, works offline', 'Progress stays on your device.'],
+    ['Gentle and accessible', 'Five distinct stone shapes, a colour-blind palette, reduce-motion, speed and hint settings. No flashes, no screen shake.'],
+  ];
+  modal(`<button class="close">×</button><h2>Our promise</h2><ul class="list">${L.map(([a, b]) => `<li><span class="ck">✓</span><span><b>${a}.</b> ${b}</span></li>`).join('')}</ul>`);
+}
+function showSettings() {
+  const S = SAVE.settings;
+  const seg = (key, opts) => `<div class="seg" data-key="${key}">${opts.map(([v, l]) => `<button data-v="${v}" class="${S[key] === v ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  modal(`<button class="close">×</button><h2>Settings</h2>
+    <div class="opt"><span>Pace</span>${seg('speed', [[0, 'Slow'], [1, 'Calm'], [2, 'Brisk']])}</div>
+    <div class="opt"><span>Hints</span>${seg('hint', [[0, 'Off'], [3, '3s'], [6, '6s'], [12, '12s']])}</div>
+    <div class="opt"><span>Reduce motion</span>${seg('still', [[false, 'Off'], [true, 'On']])}</div>
+    <div class="opt"><span>Colour-blind palette</span>${seg('cb', [[false, 'Off'], [true, 'On']])}</div>
+    <div class="opt"><span>Sound</span>${seg('sound', [[true, 'On'], [false, 'Off']])}</div>
+    <div class="opt"><span>Reset all progress</span><button class="btn quiet small" id="resetBtn">Reset</button></div>
+    <p class="small" style="margin-top:10px">Progress is saved on this device only.</p>`, () => { if (!G) renderHome(); });
+  $('#card').querySelectorAll('.seg').forEach(sg => sg.querySelectorAll('button').forEach(b => b.onclick = () => {
+    const key = sg.dataset.key; let v = b.dataset.v; v = v === 'true' ? true : v === 'false' ? false : +v;
+    S[key] = v; persist(); applySettings(); showSettings();
+  }));
+  let armed = false;
+  $('#resetBtn').onclick = e => { if (!armed) { armed = true; e.target.textContent = 'Tap again'; return; } SAVE = structuredClone(DEFAULT_SAVE); persist(); applySettings(); closeModal(); goHome(); toast('Progress reset'); };
+}
+function applySettings() { document.body.classList.toggle('cb', !!SAVE.settings.cb); document.body.classList.toggle('still', !!SAVE.settings.still); setSpeed(); if (G) scheduleHint(); }
+
+// ---------- boot ----------
+loadSave(); applySettings(); viewArea = currentArea(); renderHome();
+if (!SAVE.seenIntro) {
+  modal(`<div class="bigicon">${ART.lotusIcon()}</div><h2>Welcome to Lotus Kingdom</h2>
+    <p>Swipe a stone into its neighbour to line up 3 or more. Line up 4 for a <b>koi</b>, a 2×2 square for a <b>dragonfly</b>, an L or T for a <b>whirlpool</b>, and 5 in a row for a <b>lotus</b>. Tap a power-up to release it, or swipe two together.</p>
+    <p>Each level you finish earns lotus to restore the garden.</p>
+    <p class="small">No lives. No timers. Nothing to buy.</p>
+    <div class="actions"><button class="btn jade" id="introBtn">Begin</button></div>`);
+  $('#introBtn').onclick = () => { SAVE.seenIntro = true; persist(); closeModal(); };
+}
+</script>
+</body>
+</html>
