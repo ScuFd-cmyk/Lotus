@@ -15,7 +15,7 @@
   --c3a:#ffffff;--c3b:#f2e6cc;--c3s:#b79e72;   /* moon quartz */
   --c4a:#d3e5f5;--c4b:#8db4d9;--c4s:#4f7da8;   /* river drop */
   --c5a:#fbe0e6;--c5b:#eba9b8;--c5s:#b76a7d;   /* rose quartz (hard only) */
-  --ink:#4e5b57;--ink2:#7d8a85;--sand:#efe6d6;--sand2:#e3d6bf;--slate:#a9b3af;--lotus:#e8a9b8;--lotusD:#c97f92;--jade:#8ecdb3;--jadeD:#5fa88d;--amber:#d9a35b;
+  --ink:#4e5b57;--ink2:#56625d;--amberText:#9c6b2b;--hardText:#9e566a;--sand:#efe6d6;--sand2:#e3d6bf;--slate:#a9b3af;--lotus:#e8a9b8;--lotusD:#c97f92;--jade:#8ecdb3;--jadeD:#5fa88d;--amber:#d9a35b;
   --cell:44px;--t-swap:160ms;--t-clear:220ms;--t-fall:250ms;
   --safe-t:env(safe-area-inset-top,0px);--safe-b:env(safe-area-inset-bottom,0px);
 }
@@ -28,11 +28,11 @@ body.cb{ /* Okabe-Ito hues, same shapes & lightness order */
   --c5a:#fbd8c8;--c5b:#e08a6a;--c5s:#a04a2c;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
-html,body{margin:0;height:100%;overflow:hidden;font-family:'Nunito',system-ui,sans-serif;color:var(--ink)}
+html,body{margin:0;height:100%;overflow:hidden;font-family:'Nunito',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:var(--ink);touch-action:manipulation;overscroll-behavior:none;-webkit-text-size-adjust:100%}
 body{position:fixed;inset:0;background:var(--sand)}
 #sandBg{position:fixed;inset:0;z-index:0;pointer-events:none}
 button{font-family:inherit;cursor:pointer;border:0;color:inherit}
-.screen{position:absolute;inset:0;display:none;flex-direction:column;padding-top:var(--safe-t);padding-bottom:var(--safe-b);z-index:1}
+.screen{position:absolute;inset:0;display:none;flex-direction:column;padding-top:var(--safe-t);padding-bottom:var(--safe-b);padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px);z-index:1}
 .screen.on{display:flex}
 .serif{font-family:'Cormorant Garamond',Georgia,serif}
 .glass{background:rgba(255,255,255,.55);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);box-shadow:0 6px 18px rgba(78,91,87,.12),inset 0 1px 0 rgba(255,255,255,.8)}
@@ -82,7 +82,7 @@ button{font-family:inherit;cursor:pointer;border:0;color:inherit}
 .lvlInfo{display:flex;flex-direction:column;line-height:1.1}
 .lvlInfo .lvl{font-family:'Cormorant Garamond',serif;font-size:22px;font-weight:700;white-space:nowrap}
 .lvlInfo .diff{font-size:11px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:var(--ink2)}
-.lvlInfo .diff.hard{color:var(--lotusD)}
+.lvlInfo .diff.hard{color:var(--hardText)}
 .lvlInfo .score{font-size:12px;color:var(--ink2);font-weight:700}
 .goalBox{flex:1;display:flex;align-items:center;justify-content:center;gap:10px;min-width:0}
 .goal{display:flex;flex-direction:column;align-items:center;position:relative}
@@ -98,7 +98,7 @@ button{font-family:inherit;cursor:pointer;border:0;color:inherit}
 .movesBox{width:64px;height:60px;border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(255,255,255,.75);box-shadow:inset 0 0 0 2px rgba(142,205,179,.7);transition:color .6s,box-shadow .6s}
 .movesBox b{font-size:24px;line-height:1;font-weight:800}
 .movesBox span{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink2);font-weight:800}
-.movesBox.low{color:var(--amber);box-shadow:inset 0 0 0 2px rgba(217,163,91,.8);animation:breathe 2s ease-in-out infinite}
+.movesBox.low{color:var(--amberText);box-shadow:inset 0 0 0 2px rgba(217,163,91,.8);animation:breathe 2s ease-in-out infinite}
 @keyframes breathe{50%{transform:scale(1.04)}}
 #boardWrap{flex:1;display:flex;align-items:center;justify-content:center;min-height:0;padding:6px}
 #board{position:relative;width:calc(var(--cell)*8);height:calc(var(--cell)*8);touch-action:none}
@@ -111,7 +111,10 @@ button{font-family:inherit;cursor:pointer;border:0;color:inherit}
   radial-gradient(closest-side at 40% 75%,rgba(255,255,255,.8),transparent 60%),
   radial-gradient(closest-side at 85% 65%,rgba(255,255,255,.6),transparent 60%);background-size:50% 50%;animation:caustic 14s ease-in-out infinite alternate}
 @keyframes caustic{to{transform:translate(8%,6%) rotate(6deg)}}
-body.still .basin .caustic{animation:none}
+body.still .basin .caustic{animation:none;transform:none}
+/* Reduce motion also stills idle loops (spinning power-ups, hint bob, low-moves breathing) */
+body.still .spin svg,body.still .spinfast svg,body.still .bob svg,body.still .movesBox.low,body.still .piece.hint .in{animation:none}
+body.still .piece.hint .in{transform:translateY(-6%) scale(1.06)}
 .cellbg{position:absolute;width:var(--cell);height:var(--cell)}
 .cellbg::before{content:'';position:absolute;inset:8%;border-radius:40%;background:rgba(255,255,255,.10)}
 .silt{position:absolute;width:var(--cell);height:var(--cell);transition:opacity .5s ease,transform .5s ease}
@@ -175,7 +178,7 @@ body.still .basin .caustic{animation:none}
 .card .ribbon{display:inline-block;background:rgba(232,169,184,.35);color:#8c4558;font-weight:800;padding:4px 14px;border-radius:999px;margin-bottom:6px;font-size:12px;letter-spacing:.06em;text-transform:uppercase}
 .card .ribbon.br{background:rgba(142,205,179,.35);color:#2d6b55}
 .card .actions{display:flex;flex-direction:column;gap:10px;margin-top:16px}
-.card .close{position:absolute;right:12px;top:12px;width:36px;height:36px;border-radius:50%;background:rgba(78,91,87,.08);font-size:20px;font-weight:700;color:var(--ink2)}
+.card .close{position:absolute;z-index:1;right:12px;top:12px;width:36px;height:36px;border-radius:50%;background:rgba(78,91,87,.08);font-size:20px;font-weight:700;color:var(--ink2)}
 .goalsRow{display:flex;justify-content:center;gap:18px;margin:12px 0}
 .goalsRow .goal .ic{width:46px;height:46px}
 .pre{display:flex;justify-content:center;gap:14px;margin-top:6px}
@@ -279,7 +282,7 @@ body.still .basin .caustic{animation:none}
   <div id="boostHint" class="glass"></div>
 </section>
 
-<div id="modal"><div class="card" id="card"></div></div>
+<div id="modal"><div class="card" id="card" role="dialog" aria-modal="true"></div></div>
 
 <script>
 /*__MOVES__*/
@@ -292,7 +295,6 @@ const el = (tag, cls, html) => { const e = document.createElement(tag); if (cls)
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ---------- art (design spec §2-3) ----------
-function starPts(cx, cy, R, r, n = 5) { let p = []; for (let i = 0; i < n * 2; i++) { const a = -Math.PI / 2 + i * Math.PI / n, rad = i % 2 ? r : R; p.push((cx + rad * Math.cos(a)).toFixed(1) + ',' + (cy + rad * Math.sin(a)).toFixed(1)); } return p.join(' '); }
 const SHEEN = '<ellipse cx="37" cy="31" rx="15" ry="8" fill="#fff" opacity=".55" transform="rotate(-28 37 31)"/><ellipse cx="62" cy="74" rx="18" ry="6" fill="#000" opacity=".06"/>';
 const sw = i => `stroke="var(--c${i}s)" stroke-width="5" stroke-linejoin="round"`;
 const SHAPES = [
@@ -346,11 +348,33 @@ function pieceArt(t) {
 const STONE_NAMES = ['jade discs', 'lavender pebbles', 'terracotta tiles', 'moon quartz', 'river drops', 'rose quartz'];
 
 // ---------- save ----------
+// Save format (localStorage 'lotus-kingdom-save'). Inventory keys use internal names:
+// hammer=Tap, arrow=Breeze, cannon=Rainfall, shuffle=Stir, rocket=Koi, tnt=Whirlpool, light=Lotus.
+// 'attempt' (added in 0.2.0, optional): garden tools spent in an unfinished level, refunded on load.
 const DEFAULT_SAVE = { level: 1, stars: 0, coins: 150, inv: { hammer: 3, arrow: 2, cannon: 2, shuffle: 2, rocket: 2, tnt: 1, light: 1 }, built: {}, fails: {}, skipped: {}, done: {}, streak: 0, daily: {}, settings: { speed: 1, hint: 6, cb: false, sound: true, still: false } };
 let SAVE;
+const cloneJSON = o => JSON.parse(JSON.stringify(o)); // structuredClone is missing on older Android WebViews
 function loadSave() {
-  try { const s = JSON.parse(localStorage.getItem('lotus-kingdom-save') || 'null'); if (s) { SAVE = Object.assign(structuredClone(DEFAULT_SAVE), s); SAVE.inv = Object.assign({ ...DEFAULT_SAVE.inv }, s.inv); SAVE.settings = Object.assign({ ...DEFAULT_SAVE.settings }, s.settings); return; } } catch (e) {}
-  SAVE = structuredClone(DEFAULT_SAVE);
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem('lotus-kingdom-save') || 'null'); } catch (e) {}
+  if (!s || typeof s !== 'object') {
+    SAVE = cloneJSON(DEFAULT_SAVE);
+    try { if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) SAVE.settings.still = true; } catch (e) {}
+    return;
+  }
+  SAVE = Object.assign(cloneJSON(DEFAULT_SAVE), s);
+  SAVE.inv = Object.assign({ ...DEFAULT_SAVE.inv }, s.inv);
+  SAVE.settings = Object.assign({ ...DEFAULT_SAVE.settings }, s.settings);
+  for (const k of ['built', 'fails', 'skipped', 'done', 'daily']) if (!SAVE[k] || typeof SAVE[k] !== 'object') SAVE[k] = {};
+  for (const k of Object.keys(SAVE.inv)) if (!Number.isFinite(SAVE.inv[k]) || SAVE.inv[k] < 0) SAVE.inv[k] = 0;
+  // The tab was closed mid-level: give back what that attempt used (the fairness promise).
+  if (SAVE.attempt) {
+    const a = SAVE.attempt;
+    for (const k of a.pre || []) if (k in SAVE.inv) SAVE.inv[k]++;
+    for (const [k, n] of Object.entries(a.used || {})) if (k in SAVE.inv && n > 0) SAVE.inv[k] += n;
+    delete SAVE.attempt;
+    persist();
+  }
 }
 function persist() { try { localStorage.setItem('lotus-kingdom-save', JSON.stringify(SAVE)); } catch (e) {} }
 
@@ -472,7 +496,7 @@ function renderKingdom(justBuilt) {
   const first = Math.floor(viewArea / AREAS.length) * AREAS.length;
   const nav = [];
   if (first > 0) nav.push(`<button data-a="${first - 1}" aria-label="Previous season">‹</button>`);
-  for (let i = first; i < first + AREAS.length; i++) nav.push(`<button class="${i === viewArea ? 'on' : ''}" data-a="${i}">${i - first + 1}</button>`);
+  for (let i = first; i < first + AREAS.length; i++) nav.push(`<button class="${i === viewArea ? 'on' : ''}" data-a="${i}" aria-label="${areaInfo(i).name}"${i === viewArea ? ' aria-current="true"' : ''}>${i - first + 1}</button>`);
   if (first + AREAS.length <= currentArea()) nav.push(`<button data-a="${first + AREAS.length}" aria-label="Next season">›</button>`);
   $('#areaNav').innerHTML = nav.join('');
   $('#areaNav').querySelectorAll('button').forEach(b => b.onclick = () => { viewArea = +b.dataset.a; renderKingdom(); });
@@ -513,8 +537,10 @@ function modal(html, onClose) {
   $('#card').innerHTML = html;
   $('#modal').classList.add('on');
   const c = $('#card .close');
-  if (c) c.onclick = () => { closeModal(); onClose && onClose(); };
+  if (c) { c.setAttribute('aria-label', 'Close'); c.onclick = () => { closeModal(); onClose && onClose(); }; }
+  const h = $('#card h2'); if (h) { h.id = 'cardTitle'; $('#card').setAttribute('aria-labelledby', 'cardTitle'); }
 }
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && $('#modal').classList.contains('on')) { const c = $('#card .close'); if (c) c.click(); } });
 function closeModal() { $('#modal').classList.remove('on'); }
 function toast(msg) { const t = el('div', 'toast', msg); document.body.appendChild(t); setTimeout(() => t.remove(), 2700); }
 
@@ -542,7 +568,7 @@ function preLevel(def) {
   const picks = new Set();
   const st = Math.min(3, SAVE.streak);
   const isDaily = !!def.daily;
-  const fails = SAVE.fails[def.n] || 0;
+  const fails = isDaily ? 0 : SAVE.fails[def.n] || 0;
   const draw = () => {
     modal(`<button class="close">×</button>
       ${def.hard ? '<div class="ribbon">Hard level · worth 2 lotus</div>' : def.difficulty === 'Breather' ? '<div class="ribbon br">Breather</div>' : ''}

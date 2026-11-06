@@ -148,7 +148,7 @@ class Game {
   goalMet() { const r = this.remaining(); return Object.keys(r).length > 0 && Object.values(r).every(v => v === 0); }
   progressValue() { // lower is better; used by bots + propeller targeting
     const r = this.remaining(); let s = 0;
-    for (const [k, v] of Object.entries(r)) s += v;
+    for (const v of Object.values(r)) s += v;
     return s;
   }
 
@@ -223,12 +223,11 @@ class Game {
       t.s = S_NONE;
       if (s) burst(s, r, c, opts.bigTntAt === k);
     }
-    const mult = Math.max(1, this.chain);
     for (const { r, c, t } of cleared) {
       if (this.grass[r][c] > 0) this.grass[r][c]--;
       if (t.c >= 0) this.collected[t.c] = (this.collected[t.c] || 0) + 1;
       B[r][c] = null;
-      if (!opts.noSplash) for (const [dy, dx] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      for (const [dy, dx] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
         const y = r + dy, x = c + dx;
         if (inB(y, x) && B[y][x] && B[y][x].c === CRATE) crateHits.add(K(y, x));
       }
@@ -241,7 +240,7 @@ class Game {
       crates.push({ r, c, t, broke: t.hp <= 0 });
       if (t.hp <= 0) { B[r][c] = null; if (this.grass[r][c] > 0) this.grass[r][c]--; }
     }
-    return { cleared, blasts, crates, mult };
+    return { cleared, blasts, crates };
   }
 
   mostCommonColor(exclude) {
@@ -466,7 +465,7 @@ class Game {
   }
 
   // ---------- boosters (free: don't cost moves) ----------
-  boosterHammer(r, c) { this.chain = 1; return { ...this.clearCells(new Set([K(r, c)]), { noSplash: false }), created: [] }; }
+  boosterHammer(r, c) { this.chain = 1; return { ...this.clearCells(new Set([K(r, c)])), created: [] }; }
   boosterRow(r) { this.chain = 1; const s = new Set(); for (let x = 0; x < N; x++) s.add(K(r, x)); return { ...this.clearCells(s), blasts: [{ type: 'h', r, c: 0 }], created: [] }; }
   boosterCol(c) { this.chain = 1; const s = new Set(); for (let y = 0; y < N; y++) s.add(K(y, c)); return { ...this.clearCells(s), blasts: [{ type: 'v', r: 0, c }], created: [] }; }
 

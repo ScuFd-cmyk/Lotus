@@ -1,5 +1,15 @@
 // ---------- game state ----------
 let G = null, DEF = null, busy = false, sel = null, undoStack = [], undosLeft = 3, boosterMode = null, hintTimer = null, hintCells = [], usedPre = [], usedBoosters = {}, extraUsed = false, zenCleared = 0, score = 0;
+// epoch changes whenever a level starts or ends, so async move flows from the old level stop
+// instead of running on the new board. endTimer is the pending win / out-of-moves screen.
+let epoch = 0, endTimer = null, pausePending = false;
+const ABORT = { abort: true };
+async function wait(ms, ep) { await sleep(ms); if (ep !== epoch || !G) throw ABORT; }
+function guard(fn) { return (...a) => fn(...a).catch(e => { if (e !== ABORT) throw e; }); }
+function resetFlow() { epoch++; busy = false; pausePending = false; clearTimeout(endTimer); endTimer = null; }
+// Boosters spent in an unfinished attempt are kept in the save so they come back even if the
+// tab is closed mid-level (see refundPendingAttempt in loadSave).
+function saveAttempt() { if (DEF && !DEF.zen && (usedPre.length || Object.keys(usedBoosters).length)) SAVE.attempt = { pre: usedPre.slice(), used: { ...usedBoosters } }; else delete SAVE.attempt; }
 const els = new Map();
 let CELL = 44;
 let T = { swap: 160, clear: 220, fall: 250 };
@@ -20,17 +30,19 @@ function setSpeed() {
 }
 
 function startLevel(def, pre) {
+  resetFlow();
   DEF = def; G = new Game(def);
   const st = def.daily || def.zen ? 0 : Math.min(3, SAVE.streak);
   const specials = [];
   if (st >= 1) specials.push(S_RH);
   if (st >= 2) specials.push(S_TNT);
   if (st >= 3) specials.push(S_LIGHT);
-  usedPre = pre.slice();
-  for (const k of pre) { SAVE.inv[k]--; specials.push(PRE.find(p => p[0] === k)[3]); }
+  usedPre = pre.filter(k => SAVE.inv[k] > 0);
+  for (const k of usedPre) { SAVE.inv[k]--; specials.push(PRE.find(p => p[0] === k)[3]); }
   if (specials.length) G.placeSpecials(specials.map(s => s === S_RH && G.rng() < .5 ? S_RV : s));
+  usedBoosters = {}; saveAttempt();
   persist();
-  usedBoosters = {}; undoStack = []; undosLeft = def.zen ? 99 : 3; sel = null; boosterMode = null; extraUsed = false; zenCleared = 0; score = 0;
+  undoStack = []; undosLeft = def.zen ? 99 : 3; sel = null; boosterMode = null; extraUsed = false; zenCleared = 0; score = 0;
   els.clear(); $('#pieceLayer').innerHTML = ''; $('#fx').innerHTML = '';
   show('game');
   $('#lvlName').textContent = def.zen ? 'Zen' : def.daily ? 'Daily' : 'Level ' + def.n;
@@ -116,17 +128,18 @@ function updateHud() {
 // ---------- garden tools (in-game boosters) ----------
 const BOOST = [['hammer', 'Tap', 'Tap: lift out one stone or one driftwood layer', ART.tap, 60], ['arrow', 'Breeze', 'Gentle Breeze: clears a row', ART.breeze, 80], ['cannon', 'Rainfall', 'Rainfall: clears a column', ART.rain, 80], ['shuffle', 'Stir', 'Stir the basin', ART.stir, 40]];
 function renderBoosters() {
-  $('#boosterBar').innerHTML = BOOST.map(([k, label, , art]) => `<button class="bst ${boosterMode === k ? 'on' : ''}" data-k="${k}"><span class="stone">${art()}</span><span class="n ${SAVE.inv[k] ? '' : 'plus'}">${SAVE.inv[k] || '+'}</span><label>${label}</label></button>`).join('')
-    + `<span class="sep"></span><button class="bst" id="undoBtn"><span class="stone" style="width:46px;height:46px">${ART.undo()}</span><span class="n plus">${undosLeft}</span><label>Undo</label></button>`;
+  $('#boosterBar').innerHTML = BOOST.map(([k, label, , art]) => `<button class="bst ${boosterMode === k ? 'on' : ''}" data-k="${k}" aria-pressed="${boosterMode === k}" aria-label="${label}: ${SAVE.inv[k] ? SAVE.inv[k] + ' left' : 'trade ' + BOOST.find(b => b[0] === k)[4] + ' coins for one'}"><span class="stone">${art()}</span><span class="n ${SAVE.inv[k] ? '' : 'plus'}">${SAVE.inv[k] || '+'}</span><label>${label}</label></button>`).join('')
+    + `<span class="sep"></span><button class="bst" id="undoBtn" aria-label="Undo, ${undosLeft} left"><span class="stone" style="width:46px;height:46px">${ART.undo()}</span><span class="n plus">${undosLeft}</span><label>Undo</label></button>`;
   $('#boosterBar').querySelectorAll('.bst[data-k]').forEach(b => b.onclick = () => tapBooster(b.dataset.k));
-  $('#undoBtn').onclick = () => doUndo();
+  $('#undoBtn').onclick = () => { if (!modalOpen()) doUndo(); };
   const bh = $('#boostHint');
   if (boosterMode) { bh.textContent = BOOST.find(b => b[0] === boosterMode)[2] + ' — tap the basin'; bh.style.display = 'block'; } else bh.style.display = 'none';
   if (G) updateHudUndo();
 }
 function updateHudUndo() { const ub = $('#undoBtn'); if (ub) ub.classList.toggle('off', !(undoStack.length && undosLeft > 0)); }
-async function tapBooster(k) {
-  if (busy) return;
+const modalOpen = () => $('#modal').classList.contains('on');
+const tapBooster = guard(async function (k) {
+  if (busy || !G || modalOpen()) return;
   if (!SAVE.inv[k]) {
     const price = BOOST.find(b => b[0] === k)[4];
     if (SAVE.coins >= price) { SAVE.coins -= price; SAVE.inv[k]++; persist(); toast(`Traded ${price} earned coins for 1 ${BOOST.find(b => b[0] === k)[1]}`); renderBoosters(); }
@@ -134,35 +147,41 @@ async function tapBooster(k) {
     return;
   }
   if (k === 'shuffle') {
-    pushUndo(); spendBooster(k); busy = true; clearHint();
+    const ep = epoch;
+    pushUndo(); spendBooster(k); busy = true; clearHint(); boosterMode = null; renderBoosters();
     sfx.whoosh(); fxSwirl(3.5, 3.5, 4.5);
-    G.shuffle(); render(); await sleep(T.fall + 120); busy = false; updateHud(); scheduleHint(); return;
+    G.shuffle(); render(); await wait(T.fall + 120, ep); busy = false; afterMove(); return;
   }
   boosterMode = boosterMode === k ? null : k;
   clearSel();
   renderBoosters();
-}
-function spendBooster(k) { SAVE.inv[k]--; usedBoosters[k] = (usedBoosters[k] || 0) + 1; persist(); renderBoosters(); }
-async function applyBooster(r, c) {
+});
+function spendBooster(k) { SAVE.inv[k]--; usedBoosters[k] = (usedBoosters[k] || 0) + 1; saveAttempt(); persist(); renderBoosters(); }
+const applyBooster = guard(async function (r, c) {
   const k = boosterMode; boosterMode = null; renderBoosters();
+  if (!k || !SAVE.inv[k]) return;
   const t = G.at(r, c);
   if (k === 'hammer' && !t) return;
+  const ep = epoch;
   pushUndo(); spendBooster(k); busy = true; clearHint();
   let res;
   if (k === 'hammer') { res = G.boosterHammer(r, c); sfx.tok(); }
   else if (k === 'arrow') { res = G.boosterRow(r); res.blasts = [{ type: 'breeze', r, c: 0 }]; sfx.rush(); }
   else { res = G.boosterCol(c); res.blasts = [{ type: 'rain', r: 0, c }]; sfx.rush(); }
-  await cascade(res, []);
+  await cascade(res, [], ep);
   busy = false; afterMove();
-}
+});
 
 // ---------- undo ----------
-function pushUndo() { undoStack.push({ snap: G.snapshot(), inv: { ...SAVE.inv }, used: { ...usedBoosters }, zen: zenCleared, score }); if (undoStack.length > 10) undoStack.shift(); }
+// Undo gives back only the garden tools used since that point. It never resets the whole
+// inventory, so tools bought with coins mid-level are kept.
+function pushUndo() { undoStack.push({ snap: G.snapshot(), used: { ...usedBoosters }, zen: zenCleared, score }); if (undoStack.length > 10) undoStack.shift(); }
 function doUndo() {
-  if (busy || !undoStack.length) return false;
+  if (busy || !G || !undoStack.length) return false;
   if (undosLeft <= 0) { toast('No undos left this attempt'); return false; }
   const u = undoStack.pop(); undosLeft--;
-  G.restore(u.snap); SAVE.inv = u.inv; usedBoosters = u.used; zenCleared = u.zen; score = u.score; persist();
+  for (const k of new Set([...Object.keys(usedBoosters), ...Object.keys(u.used)])) SAVE.inv[k] += (usedBoosters[k] || 0) - (u.used[k] || 0);
+  G.restore(u.snap); usedBoosters = u.used; zenCleared = u.zen; score = u.score; saveAttempt(); persist();
   render(); renderBoosters(); updateHud(); scheduleHint();
   sfx.swish();
   toast(`Move undone · ${undosLeft} left`);
@@ -195,6 +214,7 @@ board.addEventListener('pointerup', () => {
   const d = down; down = null;
   if (d.moved || busy) return;
   const [r, c] = d.cell;
+  if (!G) return;
   if (boosterMode) { applyBooster(r, c); return; }
   const t = G.at(r, c);
   if (!t || t.c === CRATE) { clearSel(); return; }
@@ -296,7 +316,7 @@ function fxDroplets(cleared) {
 function praise(text) { const p = el('div', 'praise', text); $('#board').appendChild(p); setTimeout(() => p.remove(), 1350); }
 
 // ---------- move flow ----------
-async function cascade(first, focus) {
+async function cascade(first, focus, ep) {
   let steps = 0;
   const handle = async s => {
     steps++;
@@ -304,8 +324,8 @@ async function cascade(first, focus) {
     if (s.created?.length) sfx.made();
     sfx.clink(steps - 1);
     fxBlasts(s.blasts); fxDroplets(s.cleared); zenCleared += s.cleared.length;
-    render(); updateHud(); await sleep(T.clear + 40);
-    G.gravity(); render(); await sleep(T.fall + 40);
+    render(); updateHud(); await wait(T.clear + 40, ep);
+    G.gravity(); render(); await wait(T.fall + 40, ep);
   };
   if (first) await handle(first);
   let f = focus;
@@ -316,12 +336,13 @@ async function cascade(first, focus) {
   }
   if (steps >= 3) { praise(['', '', '', 'Flow', 'Serene', 'Harmony'][Math.min(5, steps)] || 'Harmony'); sfx.bell(); }
   G.chain = 0;
-  if (!G.findMove()) { toast('No moves left — the basin stirs itself (free)'); sfx.whoosh(); fxSwirl(3.5, 3.5, 4.5); G.shuffle(); render(); await sleep(T.fall + 100); }
+  if (!G.findMove()) { toast('No moves left — the basin stirs itself (free)'); sfx.whoosh(); fxSwirl(3.5, 3.5, 4.5); G.shuffle(); render(); await wait(T.fall + 100, ep); }
 }
-async function doSwap(a, b) {
-  if (busy || DEF == null) return;
+const doSwap = guard(async function (a, b) {
+  if (busy || !G || modalOpen()) return;
   const A = G.at(...a), B = G.at(...b);
   if (!G.canSwap(a, b)) return;
+  const ep = epoch;
   busy = true; clearHint();
   const valid = G.isValidSwap(a, b);
   const eA = els.get(A.id), eB = els.get(B.id);
@@ -329,40 +350,44 @@ async function doSwap(a, b) {
   if (!valid) {
     sfx.tok();
     const mid = (p, q, k) => [p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k];
-    setPos(eA, ...mid(a, b, .35)); setPos(eB, ...mid(b, a, .35)); await sleep(T.swap);
-    setPos(eA, ...a); setPos(eB, ...b); await sleep(T.swap + 20);
+    setPos(eA, ...mid(a, b, .35)); setPos(eB, ...mid(b, a, .35)); await wait(T.swap, ep);
+    setPos(eA, ...a); setPos(eB, ...b); await wait(T.swap + 20, ep);
     [eA, eB].forEach(e => e.classList.remove('swap'));
-    busy = false; scheduleHint(); return;
+    busy = false; afterSettle(); scheduleHint(); return;
   }
   pushUndo(); sfx.swish(); haptic(8);
-  G.swapCells(a, b); render(); await sleep(T.swap + 20);
+  G.swapCells(a, b); render(); await wait(T.swap + 20, ep);
   [eA, eB].forEach(e => e.classList.remove('swap'));
   if (!DEF.zen) { G.moves--; G.movesUsed++; }
   updateHud();
-  if (A.s || B.s) { haptic(15); await cascade(G.fireSwap(a, b), []); }
-  else await cascade(null, [a, b]);
+  if (A.s || B.s) { haptic(15); await cascade(G.fireSwap(a, b), [], ep); }
+  else await cascade(null, [a, b], ep);
   busy = false; afterMove();
-}
-async function doFire(r, c) {
-  if (busy) return;
+});
+const doFire = guard(async function (r, c) {
+  if (busy || !G || modalOpen()) return;
+  const t = G.at(r, c); if (!t || !t.s) return;
+  const ep = epoch;
   busy = true; clearHint(); pushUndo(); haptic(15);
   if (!DEF.zen) { G.moves--; G.movesUsed++; }
   updateHud();
-  await cascade(G.fireAt(r, c), []);
+  await cascade(G.fireAt(r, c), [], ep);
   busy = false; afterMove();
-}
+});
 function afterMove() {
   updateHud(); updateHudUndo(); scheduleHint();
-  if (DEF.zen) return;
-  if (G.goalMet()) { busy = true; clearHint(); setTimeout(win, 450); return; }
-  if (G.moves <= 0) { busy = true; clearHint(); setTimeout(outOfMoves, 450); }
+  if (!DEF.zen && G.goalMet()) { busy = true; pausePending = false; clearHint(); endTimer = setTimeout(win, 450); return; }
+  if (!DEF.zen && G.moves <= 0) { busy = true; pausePending = false; clearHint(); endTimer = setTimeout(outOfMoves, 450); return; }
+  afterSettle();
 }
+// A pause tapped mid-cascade opens once the basin settles.
+function afterSettle() { if (pausePending) { pausePending = false; openPause(); } }
 
 // ---------- end of level ----------
 function refundBoosters() {
   for (const k of usedPre) SAVE.inv[k]++;
   for (const [k, n] of Object.entries(usedBoosters)) SAVE.inv[k] += n;
-  usedPre = []; usedBoosters = {};
+  usedPre = []; usedBoosters = {}; delete SAVE.attempt;
 }
 function bloomBasin() {
   if (still()) return;
@@ -377,6 +402,7 @@ function bloomBasin() {
   }
 }
 function win() {
+  endTimer = null; usedPre = []; usedBoosters = {}; delete SAVE.attempt; // a win keeps what it used
   sfx.win(); haptic([10, 40, 10]); bloomBasin();
   const isDaily = !!DEF.daily;
   const firstClear = isDaily ? !SAVE.daily[DEF.daily] : !SAVE.done[DEF.n];
@@ -399,12 +425,13 @@ function win() {
       <div class="coinsUp"><span style="display:inline-block;width:30px;height:30px;vertical-align:-6px">${ART.coin()}</span> +${coins}</div>
       <p class="small">Score ${score.toLocaleString()} · ${G.moves} leftover move${G.moves === 1 ? '' : 's'} became coins.</p>
       ${gift}
-      <div class="actions">${!isDaily ? `<button class="btn jade" id="nextBtn">Level ${SAVE.level}</button>` : ''}<button class="btn quiet" id="homeBtn">Back to the garden</button></div>`);
+      <div class="actions">${!isDaily && SAVE.level <= TOTAL_LEVELS ? `<button class="btn jade" id="nextBtn">Level ${SAVE.level}</button>` : ''}<button class="btn quiet" id="homeBtn">Back to the garden</button></div>`);
     $('#homeBtn').onclick = () => { closeModal(); goHome(); };
     const nb = $('#nextBtn'); if (nb) nb.onclick = () => { closeModal(); preLevel(levelDef(SAVE.level)); };
   }, still() ? 100 : 1100);
 }
 function outOfMoves() {
+  endTimer = null;
   const rem = G.remaining();
   const left = Object.values(rem).reduce((a, b) => a + b, 0);
   const fails = (SAVE.fails[DEF.n] || 0) + 1;
@@ -421,16 +448,22 @@ function outOfMoves() {
     </div>
     <p class="small">No lives lost.${Object.keys(usedBoosters).length || usedPre.length ? ' Power-ups used this attempt are returned if you retry or leave.' : ''}</p>`);
   const fail = () => { if (!DEF.daily) { SAVE.fails[DEF.n] = fails; SAVE.streak = Math.max(0, SAVE.streak - 1); } refundBoosters(); persist(); };
-  const pb = $('#plusBtn'); if (pb) pb.onclick = () => { extraUsed = true; G.moves += 5; closeModal(); busy = false; updateHud(); scheduleHint(); };
+  // +5 also goes onto every undo point, so undoing afterwards never takes the free moves back.
+  const pb = $('#plusBtn'); if (pb) pb.onclick = () => { extraUsed = true; G.moves += 5; undoStack.forEach(u => { u.snap.moves += 5; }); closeModal(); busy = false; updateHud(); scheduleHint(); };
   const ub = $('#undoBtn2'); if (ub) ub.onclick = () => { closeModal(); busy = false; doUndo(); };
   $('#retryBtn').onclick = () => { fail(); closeModal(); startLevel(DEF, []); };
   $('#quitBtn').onclick = () => { fail(); closeModal(); goHome(); };
   const sb = $('#skipBtn'); if (sb) sb.onclick = () => { fail(); SAVE.skipped[DEF.n] = true; SAVE.level++; persist(); closeModal(); toast(`Level ${DEF.n} skipped — replay it from Levels anytime`); goHome(); };
 }
-function goHome() { G = null; DEF = null; busy = false; clearHint(); show('home'); renderHome(); }
+function goHome() { resetFlow(); G = null; DEF = null; boosterMode = null; clearHint(); show('home'); renderHome(); }
 
 $('#btnPause').onclick = () => {
-  if (!G) return;
+  if (!G || endTimer) return;
+  if (busy) { pausePending = true; return; } // opens when the cascade settles
+  openPause();
+};
+function openPause() {
+  if (!G || busy) return;
   modal(`<button class="close">×</button><h2>Pause</h2>
     ${DEF.zen ? `<p>You've cleared <b>${zenCleared}</b> stones.</p>` : `<p>Leaving costs nothing. There are no lives here.</p>`}
     <div class="actions"><button class="btn jade" id="resBtn">Resume</button>${!DEF.zen ? '<button class="btn" id="rstBtn">Restart</button>' : ''}<button class="btn sky" id="setBtn">Settings</button><button class="btn quiet" id="exitBtn">Back to the garden</button></div>`);
@@ -438,7 +471,7 @@ $('#btnPause').onclick = () => {
   const rb = $('#rstBtn'); if (rb) rb.onclick = () => { refundBoosters(); persist(); closeModal(); startLevel(DEF, []); };
   $('#setBtn').onclick = showSettings;
   $('#exitBtn').onclick = () => { if (!DEF.zen) { refundBoosters(); persist(); } closeModal(); goHome(); };
-};
+}
 
 // ---------- other screens ----------
 const TOTAL_LEVELS = 10000, PER_CHAPTER = 100;
@@ -452,21 +485,23 @@ function showLevels() {
   for (let n = from; n <= to; n++) {
     const hard = n >= 7 && n % 7 === 0;
     const cls = n > max ? 'lock' : SAVE.done[n] ? 'done' : SAVE.skipped[n] ? 'skip' : '';
-    h += `<button class="lv ${cls} ${hard ? 'hard' : ''} ${n === max ? 'cur' : ''}" data-n="${n}" ${n > max ? 'disabled' : ''}>${n}</button>`;
+    const state = n > max ? 'locked' : SAVE.done[n] ? 'cleared' : SAVE.skipped[n] ? 'skipped' : n === max ? 'current' : '';
+    h += `<button class="lv ${cls} ${hard ? 'hard' : ''} ${n === max ? 'cur' : ''}" data-n="${n}" aria-label="Level ${n}${hard ? ', Hard' : ''}${state ? ', ' + state : ''}" ${n > max ? 'disabled' : ''}>${n}</button>`;
   }
   const cleared = Object.keys(SAVE.done).length;
   modal(`<button class="close">×</button><h2>Levels</h2>
     <p class="small">${cleared.toLocaleString()} of ${TOTAL_LEVELS.toLocaleString()} cleared · Jade = cleared · amber = skipped · pink dot = Hard</p>
     <div class="opt" style="border:0;justify-content:center;gap:8px">
-      <button class="pebble" id="chFirst" ${ch === 0 ? 'disabled style="opacity:.35"' : ''}>«</button>
-      <button class="pebble" id="chPrev" ${ch === 0 ? 'disabled style="opacity:.35"' : ''}>‹</button>
-      <b style="min-width:150px">Chapter ${ch + 1} · ${from}–${to}</b>
-      <button class="pebble" id="chNext" ${ch === lastCh ? 'disabled style="opacity:.35"' : ''}>›</button>
-      <button class="pebble" id="chCur" title="Jump to your level">◎</button>
+      <button class="pebble" id="chFirst" aria-label="First chapter" ${ch === 0 ? 'disabled style="opacity:.35"' : ''}>«</button>
+      <button class="pebble" id="chPrev" aria-label="Previous chapter" ${ch === 0 ? 'disabled style="opacity:.35"' : ''}>‹</button>
+      <b style="min-width:150px" aria-live="polite">Chapter ${ch + 1} · ${from}–${to}</b>
+      <button class="pebble" id="chNext" aria-label="Next chapter" ${ch === lastCh ? 'disabled style="opacity:.35"' : ''}>›</button>
+      <button class="pebble" id="chLast" aria-label="Last chapter" ${ch === lastCh ? 'disabled style="opacity:.35"' : ''}>»</button>
+      <button class="pebble" id="chCur" aria-label="Jump to your level" title="Jump to your level">◎</button>
     </div>
     <div class="lvlgrid">${h}</div>`, () => { levelsChapter = null; });
   const go = c => { levelsChapter = Math.max(0, Math.min(lastCh, c)); showLevels(); };
-  $('#chFirst').onclick = () => go(0); $('#chPrev').onclick = () => go(ch - 1); $('#chNext').onclick = () => go(ch + 1);
+  $('#chFirst').onclick = () => go(0); $('#chPrev').onclick = () => go(ch - 1); $('#chNext').onclick = () => go(ch + 1); $('#chLast').onclick = () => go(lastCh);
   $('#chCur').onclick = () => go(Math.floor((Math.min(max, TOTAL_LEVELS) - 1) / PER_CHAPTER));
   $('#card').querySelectorAll('.lv:not(.lock)').forEach(b => b.onclick = () => { levelsChapter = null; preLevel(levelDef(+b.dataset.n)); });
   const cur = $('#card .lv.cur'); if (cur) setTimeout(() => cur.scrollIntoView({ block: 'center' }), 50);
@@ -477,7 +512,7 @@ function showShop() {
     modal(`<button class="close">×</button><h2>Garden shop</h2>
       <p>Everything here costs <b>coins you earn by playing</b>. No premium currency, nothing sold for real money.</p>
       <div class="kv"><span>Your coins</span><b>${SAVE.coins}</b></div>
-      <div class="shopgrid">${items.map(([k, nm, art, p]) => `<div class="shopitem">${art()}<span>${nm} · ${SAVE.inv[k]}</span><button data-k="${k}" data-p="${p}" ${SAVE.coins < p ? 'disabled' : ''}>${p}</button></div>`).join('')}</div>
+      <div class="shopgrid">${items.map(([k, nm, art, p]) => `<div class="shopitem">${art()}<span>${nm} · ${SAVE.inv[k]}</span><button data-k="${k}" data-p="${p}" aria-label="Trade ${p} coins for 1 ${nm} (you have ${SAVE.inv[k]})" ${SAVE.coins < p ? 'disabled' : ''}>${p}</button></div>`).join('')}</div>
       <p class="small" style="margin-top:12px">Fixed prices. No timers, no “limited offers”.</p>`, () => renderHome());
     $('#card').querySelectorAll('.shopitem button').forEach(b => b.onclick = () => { const p = +b.dataset.p; if (SAVE.coins < p) return; SAVE.coins -= p; SAVE.inv[b.dataset.k]++; persist(); sfx.clink(4); draw(); });
   };
@@ -516,9 +551,14 @@ function showSettings() {
     S[key] = v; persist(); applySettings(); showSettings();
   }));
   let armed = false;
-  $('#resetBtn').onclick = e => { if (!armed) { armed = true; e.target.textContent = 'Tap again'; return; } SAVE = structuredClone(DEFAULT_SAVE); persist(); applySettings(); closeModal(); goHome(); toast('Progress reset'); };
+  $('#resetBtn').onclick = e => { if (!armed) { armed = true; e.target.textContent = 'Tap again'; return; } SAVE = cloneJSON(DEFAULT_SAVE); persist(); applySettings(); closeModal(); goHome(); toast('Progress reset'); };
 }
 function applySettings() { document.body.classList.toggle('cb', !!SAVE.settings.cb); document.body.classList.toggle('still', !!SAVE.settings.still); setSpeed(); if (G) scheduleHint(); }
+
+// Audio may only start inside a user gesture. On touch devices pointerdown does not count, so
+// unlock on the first pointerup / touchend / click / key press anywhere on the page.
+function unlockAudio() { const a = ac(); if (a && a.state === 'running') ['pointerup', 'touchend', 'click', 'keydown'].forEach(t => document.removeEventListener(t, unlockAudio, true)); }
+['pointerup', 'touchend', 'click', 'keydown'].forEach(t => document.addEventListener(t, unlockAudio, true));
 
 // ---------- boot ----------
 loadSave(); applySettings(); viewArea = currentArea(); renderHome();
