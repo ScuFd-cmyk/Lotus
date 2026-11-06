@@ -2,7 +2,9 @@
 
 A calm, fair match-3 game set in a still-water zen garden. It takes the level structure and power-ups that make Royal Match and Royal Kingdom fun, and drops the parts players hate about Candy Crush and its rivals: lives, timers, pay-walls and hidden difficulty spikes.
 
-**Play it:** open `index.html` in any browser (phone or desktop). It's one self-contained file. No install and no server needed.
+### ▶ [Play Lotus Kingdom](https://scufd-cmyk.github.io/Lotus/)
+
+Works on phone and desktop, and offline once loaded. You can also download `index.html` and open it straight from disk: it's one self-contained file, with no install and no server needed.
 
 ## What's in the game
 
@@ -69,6 +71,28 @@ node tools/merge-moves.js data/moves.part1.json
 node tools/build.js
 ```
 
-## Playtesting
+## How to give feedback
 
-Please open an issue using the **Playtest feedback** template. Include the level number, your device and browser, and what felt unfair, confusing or great.
+Thank you for playtesting!
+
+1. Open a [new issue](https://github.com/ScuFd-cmyk/Lotus/issues/new/choose) and pick the **Playtest feedback** template.
+2. Include the level number (or Zen / Daily), your device and browser, and what felt unfair, confusing or great.
+3. Screenshots or screen recordings help a lot.
+
+The pinned issue **Playtest round 1 — what to try** lists the features we'd most like you to try. Your progress is saved only in your browser, so nothing you send us includes it unless you attach it.
+
+## Changelog
+
+### 0.2.0 — audit release (2026-11-06)
+- Fixed: the board froze after "Try again" and after "Next level".
+- Fixed: pausing mid-cascade or just after the winning move could crash or pay out twice. Pause now waits for the basin to settle.
+- Fixed: undo no longer loses tools you bought mid-level, and no longer takes back the free +5 moves.
+- Fixed: tools used in an unfinished level come back even if you close the tab.
+- Fixed power-up combos: Lotus + power-up fires both, Dragonfly carrying Koi/Whirlpool onto driftwood, Whirlpool+Whirlpool size, chained Lotus colour choice.
+- The Daily never uses an unlabelled Hard layout.
+- Better contrast, screen-reader labels, stronger Reduce Motion (follows your OS setting on first launch), sound starts on the first touch, and no double-tap zoom.
+- Works on older Android WebViews.
+- New: `npm test` (engine, fuzz, levels, colours, headless UI) and CI. See [docs/AUDIT.md](docs/AUDIT.md).
+
+### 0.1.0
+- First playable build: 10,000 levels, 4 power-ups and combos, garden tools, garden restoration, Zen and Daily.

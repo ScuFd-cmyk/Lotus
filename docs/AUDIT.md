@@ -69,10 +69,10 @@ Severity: C = critical, H = high, M = medium, L = low. Status: **Fixed** (with t
 | No ads, no notifications, works offline | True | ui tests run with all http(s) requests blocked, from `file://`, with no console errors |
 | Gentle and accessible | True with notes | Contrast fixed (#13). Reduce Motion verified (#24). No animation repeats faster than every 0.6 s, so nothing flashes above 3 Hz. CVD notes (#26) |
 
-**Behaviour you may want to decide on:**
+**Decided (owner, 2026-11-06):**
 
-- **Zen mode never refunds tools.** In Zen you can't win, so tools used there are always spent. The promise only says power-ups come back "if you don't win", which arguably includes Zen. I left this unchanged because it's a design call.
-- **Restart/leave from the Pause menu doesn't count as a failure.** It doesn't drop the streak or count toward Skip. This matches "Leaving costs nothing", but it means the streak penalty only applies when you actually run out of moves.
+- **Zen mode never refunds tools.** You can't win in Zen, so tools used there stay spent. Intended.
+- **Restart/leave from the Pause menu doesn't count as a failure.** It doesn't drop the streak or count toward Skip, matching "Leaving costs nothing". Intended.
 
 ## Bot win rates
 
@@ -117,7 +117,6 @@ The key `lotus-kingdom-save` and all existing fields are unchanged. 0.2.0 adds t
 
 1. Playtest on a real iPhone (Safari) and a mid-range Android: sound on first swipe, safe areas in landscape, frame rate during big combos.
 2. Seed the bots (`makeRng` instead of `Math.random`) and raise trials to 64 for Hard levels, so the win-rate table is reproducible and less noisy.
-3. Decide the two open behaviours above (Zen refunds, pause-restart and the streak).
-4. If shapes are not enough for tritanopes in playtests, consider giving rose quartz (Hard-only) a darker rim or inner pattern in the colour-blind palette rather than changing its body colour.
-5. Add a keyboard / screen-reader way to play (arrow keys to move a cursor, Space to pick and swap).
-6. Run the CI workflow (Phase 2) so `npm test` and the build check run on every push.
+3. If shapes are not enough for tritanopes in playtests, consider giving rose quartz (Hard-only) a darker rim or inner pattern in the colour-blind palette rather than changing its body colour.
+4. Add a keyboard / screen-reader way to play (arrow keys to move a cursor, Space to pick and swap).
+5. Watch the CI workflow (`.github/workflows/ci.yml`), which runs `npm test` and the build check on every push.

@@ -1,0 +1,24 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # index.html is a build output: fail if someone edited it by hand
+      - name: index.html matches a fresh build
+        run: node tools/build.js --check
+      - name: Install dev dependencies (Playwright)
+        run: npm install --no-audit --no-fund
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: npm test
+        run: npm test
+        env:
+          CI: "1"
