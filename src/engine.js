@@ -1,4 +1,14 @@
 // ================= ENGINE (pure logic, no DOM) =================
+// Naming map (code name -> player-facing name). Internal names are kept because
+// they appear in save data (inventory keys) and in many call sites:
+//   crate / CRATE        -> Driftwood (1-3 layers, fixed in place)
+//   grass                -> Silt (1-2 layers under a stone)
+//   rocket / S_RH, S_RV  -> Koi Current (S_RH clears its row, S_RV its column)
+//   tnt / S_TNT          -> Whirlpool (5x5)
+//   light / S_LIGHT      -> Lotus Bloom (clears one colour)
+//   prop / S_PROP        -> Dragonfly (2x2 square; flies to a goal tile)
+//   hammer / arrow / cannon / shuffle (inventory keys) -> Tap / Gentle Breeze / Rainfall / Stir
+//   LIGHTC (-1)          -> colour value of every power-up: colourless, never matches
 const N = 8;
 const S_NONE = 0, S_RH = 1, S_RV = 2, S_TNT = 3, S_LIGHT = 4, S_PROP = 5;
 const CRATE = -2, LIGHTC = -1;
@@ -63,8 +73,10 @@ class Game {
         B[r][c] = this.newTile(col);
       }
       if (!this.findGroups().length && this.findMove()) return;
+      if (tries === 299) break; // keep the last board and let shuffle() repair it
       for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) if (B[r][c] && B[r][c].c !== CRATE) B[r][c] = null;
     }
+    this.shuffle();
   }
 
   clone() {
@@ -171,8 +183,33 @@ class Game {
     const seen = new Set();
     const cleared = [], blasts = [];
     const crateHits = new Set();
-    const add = (r, c) => { if (inB(r, c)) queue.push(K(r, c)); };
+    const queued = new Set(queue);
+    const add = (r, c) => { if (inB(r, c)) { const k = K(r, c); queue.push(k); queued.add(k); } };
     const B = this.board;
+    // Queue the area a power-up of type s clears when it goes off at (r, c).
+    const burst = (s, r, c, big) => {
+      if (s === S_RH) { blasts.push({ type: 'h', r, c }); for (let x = 0; x < N; x++) add(r, x); }
+      else if (s === S_RV) { blasts.push({ type: 'v', r, c }); for (let y = 0; y < N; y++) add(y, c); }
+      else if (s === S_TNT) {
+        const rad = big ? 3 : 2;
+        blasts.push({ type: 'tnt', r, c, rad });
+        for (let dy = -rad; dy <= rad; dy++) for (let dx = -rad; dx <= rad; dx++) add(r + dy, c + dx);
+      } else if (s === S_LIGHT) {
+        // A chained lotus picks the most common colour among stones not already being cleared.
+        const col = this.mostCommonColor(queued);
+        blasts.push({ type: 'light', r, c, color: col });
+        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const u = B[y][x]; if (isGem(u) && u.c === col) add(y, x); }
+      } else if (s === S_PROP) {
+        add(r - 1, c); add(r + 1, c); add(r, c - 1); add(r, c + 1);
+        const tgt = this.propellerTarget(queued);
+        if (tgt) {
+          const carry = opts.carry; opts.carry = null;
+          blasts.push({ type: 'prop', r, c, to: tgt, carry });
+          if (carry) burst(carry, tgt[0], tgt[1], false); // carried power-up goes off where the dragonfly lands
+          add(tgt[0], tgt[1]);
+        }
+      }
+    };
     while (queue.length) {
       const k = queue.shift();
       if (seen.has(k)) continue;
@@ -184,25 +221,7 @@ class Game {
       cleared.push({ r, c, t });
       const s = t.s;
       t.s = S_NONE;
-      if (s === S_RH) { blasts.push({ type: 'h', r, c }); for (let x = 0; x < N; x++) add(r, x); }
-      else if (s === S_RV) { blasts.push({ type: 'v', r, c }); for (let y = 0; y < N; y++) add(y, c); }
-      else if (s === S_TNT) {
-        const rad = opts.bigTnt ? 3 : 2;
-        blasts.push({ type: 'tnt', r, c, rad });
-        for (let dy = -rad; dy <= rad; dy++) for (let dx = -rad; dx <= rad; dx++) add(r + dy, c + dx);
-      } else if (s === S_LIGHT) {
-        const col = opts.lightColor != null ? opts.lightColor : this.mostCommonColor();
-        blasts.push({ type: 'light', r, c, color: col });
-        for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const u = B[y][x]; if (isGem(u) && u.c === col) add(y, x); }
-      } else if (s === S_PROP) {
-        add(r - 1, c); add(r + 1, c); add(r, c - 1); add(r, c + 1);
-        const tgt = this.propellerTarget(seen);
-        if (tgt) {
-          blasts.push({ type: 'prop', r, c, to: tgt, carry: opts.carry });
-          if (opts.carry && isTile(B[tgt[0]][tgt[1]])) { B[tgt[0]][tgt[1]].s = opts.carry; opts.carry = null; }
-          add(tgt[0], tgt[1]);
-        }
-      }
+      if (s) burst(s, r, c, opts.bigTntAt === k);
     }
     const mult = Math.max(1, this.chain);
     for (const { r, c, t } of cleared) {
@@ -225,13 +244,13 @@ class Game {
     return { cleared, blasts, crates, mult };
   }
 
-  mostCommonColor() {
+  mostCommonColor(exclude) {
     const cnt = Array(this.colors).fill(0);
-    for (const row of this.board) for (const t of row) if (isGem(t)) cnt[t.c]++;
+    for (let r = 0; r < N; r++) for (let c = 0; c < N; c++) { const t = this.board[r][c]; if (isGem(t) && !(exclude && exclude.has(K(r, c)))) cnt[t.c]++; }
     // prefer colors the player needs to collect
     const need = this.def.goals.collect || {};
     let best = -1, bestV = -1;
-    cnt.forEach((v, i) => { const w = v + ((need[i] && (this.collected[i] || 0) < need[i]) ? 100 : 0); if (w > bestV) { bestV = w; best = i; } });
+    cnt.forEach((v, i) => { const w = v + ((v > 0 && need[i] && (this.collected[i] || 0) < need[i]) ? 100 : 0); if (w > bestV) { bestV = w; best = i; } });
     return Math.max(0, best);
   }
 
@@ -389,9 +408,10 @@ class Game {
     let opts = {};
     if (light) {
       const other = light === A ? B : A;
-      const lp = light === A ? a : b;
+      const lp = light === A ? a : b, op = light === A ? b : a;
       light.s = S_NONE;
       keys.add(K(...lp));
+      keys.add(K(...op)); // the partner always goes too (a gem is cleared, a power-up fires)
       if (other.s === S_LIGHT) {
         other.s = S_NONE;
         for (let k = 0; k < N * N; k++) keys.add(k);
@@ -409,7 +429,6 @@ class Game {
           }
         }
         blasts.push({ type: 'light', r: lp[0], c: lp[1], color: col });
-        opts.lightColor = col;
       }
       this.combos++;
     } else if (A.s && B.s) {
@@ -419,7 +438,7 @@ class Game {
       const [r, c] = b;
       this.combos++;
       if (isRocket(sa) && isRocket(sb)) { addRow(r); addCol(c); blasts.push({ type: 'h', r, c }, { type: 'v', r, c }); }
-      else if (sa === S_TNT && sb === S_TNT) { B.s = S_TNT; opts.bigTnt = true; }
+      else if (sa === S_TNT && sb === S_TNT) { B.s = S_TNT; opts.bigTntAt = K(r, c); }
       else if ((isRocket(sa) && sb === S_TNT) || (sa === S_TNT && isRocket(sb))) {
         for (let d = -1; d <= 1; d++) { addRow(r + d); addCol(c + d); }
         blasts.push({ type: 'h', r, c }, { type: 'v', r, c }, { type: 'h', r: r - 1, c }, { type: 'h', r: r + 1, c }, { type: 'v', r, c: c - 1 }, { type: 'v', r, c: c + 1 });
@@ -477,6 +496,14 @@ class Game {
       for (const t of tiles) if (isGem(t) && !t.s) t.c = this.randColor();
       if (!this.findGroups().length && this.findMove()) return true;
     }
+    // Last resort (documented in docs/DESIGN.md): if no colour layout gives a move, which can only
+    // happen on a nearly empty board, recolour until there are no matches and turn one stone into a
+    // Koi, so the player always has a move.
+    for (let tries = 0; tries < 200 && this.findGroups().length; tries++) for (const t of tiles) if (isGem(t) && !t.s) t.c = this.randColor();
+    if (!this.findMove()) {
+      const gems = tiles.filter(t => isGem(t) && !t.s);
+      if (gems.length) { const t = gems[Math.floor(this.rng() * gems.length)]; t.c = LIGHTC; t.s = S_RH; t.born = true; }
+    }
     return false;
   }
 
@@ -511,7 +538,7 @@ function resolveAll(g, first, focus) {
   if (!g.findMove()) g.shuffle();
 }
 function playMove(g, a, b) {
-  if (a[0] === b[0] && a[1] === b[1]) { g.moves--; g.movesUsed++; resolveAll(g, g.fireAt(...a)); return true; }
+  if (a[0] === b[0] && a[1] === b[1]) { const t = g.at(...a); if (!isTile(t) || !t.s) return false; g.moves--; g.movesUsed++; resolveAll(g, g.fireAt(...a)); return true; }
   if (!g.isValidSwap(a, b)) return false;
   const A = g.at(...a), B = g.at(...b);
   g.swapCells(a, b);
@@ -522,7 +549,9 @@ function playMove(g, a, b) {
 }
 
 // ---------- levels ----------
-let MOVES_TABLE = (typeof module !== 'undefined' && require('fs').existsSync(__dirname + '/../data/moves.json')) ? JSON.parse(require('fs').readFileSync(__dirname + '/../data/moves.json', 'utf8')) : (typeof MOVES_DATA !== 'undefined' ? MOVES_DATA : null);
+// In the browser the build inlines MOVES_DATA; in Node the table is read from data/moves.json.
+let MOVES_TABLE = typeof MOVES_DATA !== 'undefined' ? MOVES_DATA
+  : (typeof require === 'function' && typeof __dirname === 'string' && require('fs').existsSync(__dirname + '/../data/moves.json')) ? JSON.parse(require('fs').readFileSync(__dirname + '/../data/moves.json', 'utf8')) : null;
 // A smooth curve. Every 7th level is a clearly-labelled Hard level (worth 2 stars); the level after it is a breather.
 function levelDef(n) {
   const r = makeRng(hashStr('lk-level-' + n));
@@ -617,7 +646,8 @@ function levelDef(n) {
 }
 
 function dailyDef(dateStr) {
-  const n = 101 + (hashStr('daily' + dateStr) % 900);
+  let n = 101 + (hashStr('daily' + dateStr) % 900);
+  if (n % 7 === 0) n += 2; // never borrow an (unlabelled) Hard level for the Daily
   const def = levelDef(n);
   def.seed = hashStr('daily-board-' + dateStr);
   def.daily = dateStr;
@@ -630,4 +660,4 @@ function zenDef(seed) {
   return { n: 'Zen', seed, colors: 5, moves: Infinity, goals: {}, grass: [], crates: [], difficulty: 'Relaxed', zen: true };
 }
 
-if (typeof module !== 'undefined') module.exports = { Game, levelDef, dailyDef, zenDef, playMove, resolveAll, N, S_RH, S_RV, S_TNT, S_LIGHT, S_PROP, CRATE };
+if (typeof module !== 'undefined') module.exports = { Game, levelDef, dailyDef, zenDef, playMove, resolveAll, makeRng, hashStr, N, S_NONE, S_RH, S_RV, S_TNT, S_LIGHT, S_PROP, CRATE, LIGHTC, K, isGem, isTile };
