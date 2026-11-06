@@ -1,11 +1,18 @@
 {
   "name": "lotus-kingdom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "A calm, fair zen-garden match-3 game. Single-file HTML, no dependencies.",
   "scripts": {
     "build": "node tools/build.js",
+    "check-build": "node tools/build.js --check",
+    "test": "node tools/build.js --check && node --test tests/engine.test.js tests/colours.test.js && node --test tests/ui.test.js",
+    "test:engine": "node --test tests/engine.test.js tests/colours.test.js",
+    "test:ui": "node --test tests/ui.test.js",
     "sim": "node tools/sim.js 1 100 16",
     "calibrate": "node tools/calibrate.js"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
   }
 }

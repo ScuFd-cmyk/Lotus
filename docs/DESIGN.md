@@ -31,7 +31,13 @@ Every stone has a unique silhouette and a different lightness, so players can re
 | Whirlpool | L or T shape | 5×5 area |
 | Lotus Bloom | 5 in a row | every stone of one color |
 
+Code names differ from player-facing names (kept for save compatibility): `crate` = Driftwood, `grass` = Silt, `rocket`/`S_RH`/`S_RV` = Koi, `tnt`/`S_TNT` = Whirlpool, `light`/`S_LIGHT` = Lotus, `prop`/`S_PROP` = Dragonfly; tools `hammer`/`arrow`/`cannon`/`shuffle` = Tap/Breeze/Rainfall/Stir.
+
 **Combos:** Koi+Koi clears a cross. Koi+Whirlpool clears 3 rows and 3 columns. Whirlpool+Whirlpool clears 7×7. Lotus+power-up converts a color into that power-up and fires them all. Lotus+Lotus clears the board. Dragonfly carries Koi or Whirlpool to its target.
+
+## Board repair
+- After every move, if no move is left, the basin stirs itself for free (`shuffle()`): first it reorders the stones, then if needed it recolours them. Either way it ends with no matches and at least one move.
+- Last resort: on a nearly empty board where no colour layout gives a move, one stone becomes a free Koi so the player can always move. This should almost never happen (driftwood never covers more than 12 of the 64 cells).
 
 ## Obstacles
 - **Driftwood:** 1–3 layers. It stays fixed and stones slide around it diagonally. It is damaged by adjacent matches or blasts.

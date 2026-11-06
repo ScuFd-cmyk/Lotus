@@ -39,13 +39,33 @@ data/moves.json       bot-calibrated move counts for levels 1–10,000
 tools/build.js        bundles src + data into index.html
 tools/sim.js          bot win-rate report:   node tools/sim.js 1 100 16
 tools/calibrate.js    recalibrate a range:    node tools/calibrate.js 1 500 12 data/moves.part.json
-tools/merge-moves.js  merge calibration parts into data/moves.json
+tools/merge-moves.js  merge calibration parts into data/moves.json (keeps all other levels)
+tests/                node:test suites (engine, colours) + Playwright UI tests
 docs/DESIGN.md        design spec summary
 ```
 
 Build after any change in `src/` or `data/`:
 
 ```
+node tools/build.js
+```
+
+Check that `index.html` is up to date (CI runs this): `node tools/build.js --check`
+
+## Tests
+
+```
+npm install                       # dev only: Playwright for the UI tests
+npx playwright install chromium   # once
+npm test                          # build check + engine/colour tests + headless UI tests
+npm run test:engine               # engine only, no dependencies
+```
+
+Recalibrate a range of levels, then merge it into the table:
+
+```
+node tools/calibrate.js 9700 10000 16 data/moves.part1.json
+node tools/merge-moves.js data/moves.part1.json
 node tools/build.js
 ```
 

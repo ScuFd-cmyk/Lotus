@@ -2,4 +2,6 @@ node_modules/
 *.png
 *.log
 data/*.part*.json
+test-results/
+playwright-report/
 .DS_Store
